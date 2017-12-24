@@ -1,0 +1,33 @@
+#!/bin/bash
+
+runtests () {
+  export numberOfUsers=$1
+  export totalEvents=$2
+
+  echo "Users  = $1"
+  echo "Events = $2"
+
+  python follower-server.py &
+  { ./followermaze.sh &> /dev/null && echo "Test passed"; } || { echo "Test failed" && exit 1; }
+}
+
+# caveat emptor: minimally tested on GNU, works reliably on Mac OS X
+cleanup () {
+  ps -ef | grep -e "[Pp]ython [Ff]ollower-server.py" | awk '{print $2}' | xargs kill -9
+}
+
+# runtests $USERS $EVENTS
+runtests 1 1
+cleanup
+
+runtests 1 10
+cleanup
+
+runtests 1 1
+cleanup
+
+# runtests 10 1
+# cleanup
+
+# runtests 10 10
+# cleanup
