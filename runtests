@@ -13,6 +13,7 @@ runtests () {
 
 # caveat emptor: minimally tested on GNU, works reliably on Mac OS X
 cleanup () {
+  echo; echo "**********************************************************"; echo
   ps -ef | grep -e "[Pp]ython [Ff]ollower-server.py" | awk '{print $2}' | xargs kill -9
 }
 
@@ -20,14 +21,6 @@ cleanup () {
 runtests 1 1
 cleanup
 
-runtests 1 10
+# slightly more interesting
+runtests 4 10
 cleanup
-
-runtests 1 1
-cleanup
-
-# runtests 10 1
-# cleanup
-
-# runtests 10 10
-# cleanup
