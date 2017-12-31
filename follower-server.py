@@ -1,29 +1,46 @@
-from twisted.internet import reactor, threads
+from twisted.internet import reactor, threads, protocol
+from twisted.internet.task import LoopingCall
 from twisted.internet.endpoints import TCP4ClientEndpoint, connectProtocol
 from twisted.internet.protocol import Protocol, Factory, ClientFactory
 
+class EventFactory(protocol.ClientFactory):
+    def __init__(self):
+        self.nextEvent = 1
+
+    def buildProtocol(self, addr):
+        p = EventProtocol()
+        p.factory = self
+        return p
 
 class EventProtocol(Protocol):
-    # events might come in chunks, handle responsibly
-    def dataReceived(self, data):
-        self.splitEvent(data)
 
-    # split along delimiter (\n), chomp trailing newline as unused, grab event id
-    # before storing away so we can put these in order. ensure we have utf8
-    def splitEvent(self, payload):
-        for event in payload.split(delimiter)[:-1]:
-            events[int(event[0])] = event.decode('utf-8')
+    def dataReceived(self, data):
+        # split along delimiter (\n), chomp trailing newline as unused, grab event id
+        # before storing away so we can put these in order. ensure we have utf8
+        message = data.rstrip()
+        for event in message.split(delimiter):
+            sequence = event.split(separator)[0]
+            try:
+                events[int(sequence)] = event.decode('utf-8')
+            except:
+                pass    # bad event?
 
 
 class UserProtocol(Protocol):
+    # make sure user clients don't time out waiting for events
+    def connectionMade(self):
+        try:
+            self.transport.setTcpKeepAlive(1)
+        except AttributeError: pass
+
     # only data received from user should be userId
     def dataReceived(self, data):
         userId = data.strip(delimiter)
-        users[userId] = self.transport
+        users[userId] = self
         followers[userId] = []
 
-    def sendUserMessage(self, user, data):
-        users[user].sendMessage(data)
+    def sendUserMessage(self, data):
+        self.transport.write(data)
 
 FOLLOW    = 'F'
 UNFOLLOW  = 'U'
@@ -35,39 +52,51 @@ def messageDispatcher(message):
     fields = message.split(separator)
 
     # case statement on message type
-    if fields[1] == FOLLOW:
-        followers[fields[3]].append(fields[2])
-        users[fields[3]].sendUserMessage(message)
-    elif fields[1] == UNFOLLOW:
-        try:
-            unfollowID = followers[fields[3]].index(fields[2])
-            followers[fields[3]].remove(unfollowID)
-        except ValueError:
+    try:
+        if fields[1] == FOLLOW:
+            followers[fields[3]].append(fields[2])
+            users[int(fields[3])].transport.write(message)
+        elif fields[1] == UNFOLLOW:
+            try:
+                unfollowID = followers[int(fields[3])].index(int(fields[2]))
+                followers[int(fields[3])].remove(unfollowID)
+            except ValueError:
+                print "ERROR: can't unfollow before following with message: %s" % message
+                pass
+        elif fields[1] == BROADCAST:
+            for user in users:
+                user.transport.write(message)
+        elif fields[1] == PRIVATE:
+            try:
+                users[int(fields[3])].transport.write(message)
+            except IndexError:
+                print "ERROR: no recipient for private message %s" % message
+                pass
+        elif fields[1] == STATUS:
+            for follower in followers[int(fields[2])]:
+                users[follower].transport.write(message)
+        else:
+            print "ERROR: unhandled message type on message %s" % message
             pass
-    elif fields[1] == BROADCAST:
-        for user in users:
-            user.sendUserMessage(message)
-    elif fields[1] == PRIVATE:
-        users[fields[3]].sendUserMessage(message)
-    elif fields[1] == STATUS:
-        for follower in followers[field[2]]:
-            users[follower].sendUserMessage(message)
-    else:
-        print "ERROR: unhandled message type"
-        exit(-1)
+    except IndexError:
+        print "ERROR: no message type found on message %s" % message
+        pass
 
-# not exactly threadsafe, but only Follow and Unfollow are trying to change data
 def blockingEventDispatch():
-    import datetime
-    nextEvent = 1
-    while True:
-        try:
-            message = events[nextEvent]
-            print "processing event %s" % str(nextEvent)
-            messageDispatcher(events[nextEvent])
-            nextEvent = nextEvent + 1
-        except KeyError:
-            pass
+#    try:
+#        message = events[eventSourceFactory.nextEvent]
+#        messageDispatcher(events[eventSourceFactory.nextEvent])
+#        print "processed event: %s" % message
+#        eventSourceFactory.nextEvent = eventSourceFactory.nextEvent + 1
+#    except KeyError:
+#        pass
+    try:
+        message = events[nextEvent]
+        messageDispatcher(events[nextEvent])
+        print "processed event: %s" % message
+        nextEvent = nextEvent + 1
+    except KeyError:
+        pass
 
 if __name__ == '__main__':
     events = {}     # store all events here, keep full string, key is sequence #
@@ -77,14 +106,21 @@ if __name__ == '__main__':
     delimiter = '\n'
     separator = '|'
 
-    event_source_factory = Factory()
-    event_source_factory.protocol = EventProtocol
+    nextEvent = 1
 
-    user_clients_factory = Factory()
-    user_clients_factory.protocol = UserProtocol
+    eventSourceFactory = EventFactory()
+    eventSourceFactory.protocol = EventProtocol
 
-    reactor.listenTCP(9090, event_source_factory)
-    reactor.listenTCP(9099, user_clients_factory)
+    userClientsFactory = Factory()
+    userClientsFactory.protocol = UserProtocol
+    userClientsFactory.clients = []
 
-    reactor.callFromThread(blockingEventDispatch)
+    try:
+        lc = LoopingCall(blockingEventDispatch)
+        lc.start(0.1)
+    except Exception as err:
+        print "ERROR starting looping call: %s" % err
+
+    reactor.listenTCP(9090, eventSourceFactory)
+    reactor.listenTCP(9099, userClientsFactory)
     reactor.run()

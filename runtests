@@ -24,3 +24,7 @@ cleanup
 # slightly more interesting
 runtests 4 10
 cleanup
+
+# ever more slightly
+#runtests 10 100
+#cleanup
