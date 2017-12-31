@@ -24,3 +24,7 @@ cleanup
 # slightly more interesting
 runtests 4 10
 cleanup
+
+# let's get crazy
+runtests 100 10000
+cleanup
