@@ -39,9 +39,6 @@ class UserProtocol(Protocol):
         users[userId] = self
         followers[userId] = []
 
-    def sendUserMessage(self, data):
-        self.transport.write(data)
-
 FOLLOW    = 'F'
 UNFOLLOW  = 'U'
 BROADCAST = 'B'
