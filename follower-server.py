@@ -13,7 +13,6 @@ class EventFactory(protocol.ClientFactory):
         return p
 
 class EventProtocol(Protocol):
-
     def dataReceived(self, data):
         # split along delimiter (\n), chomp trailing newline as unused, grab event id
         # before storing away so we can put these in order. ensure we have utf8
@@ -21,13 +20,12 @@ class EventProtocol(Protocol):
         for event in message.split(delimiter):
             sequence = event.split(separator)[0]
             try:
-                events[int(sequence)] = event.decode('utf-8')
+                events[int(sequence)] = event
             except:
                 pass    # bad event?
 
 
 class UserProtocol(Protocol):
-    # make sure user clients don't time out waiting for events
     def connectionMade(self):
         try:
             self.transport.setTcpKeepAlive(1)
@@ -36,64 +34,43 @@ class UserProtocol(Protocol):
     # only data received from user should be userId
     def dataReceived(self, data):
         userId = data.strip(delimiter)
-        users[userId] = self
-        followers[userId] = []
-
-FOLLOW    = 'F'
-UNFOLLOW  = 'U'
-BROADCAST = 'B'
-PRIVATE   = 'P'
-STATUS    = 'S'
+        users[int(userId)] = self
+        followers[int(userId)] = []
 
 def messageDispatcher(message):
     fields = message.split(separator)
+    sequence = fields[0]
+    msgType = fields[1]
+    fromId = int(fields[2]) if len(fields) > 2 else None
+    toId = int(fields[3]) if len(fields) > 3 else None
 
-    # case statement on message type
-    try:
-        if fields[1] == FOLLOW:
-            followers[fields[3]].append(fields[2])
-            users[int(fields[3])].transport.write(message)
-        elif fields[1] == UNFOLLOW:
-            try:
-                unfollowID = followers[int(fields[3])].index(int(fields[2]))
-                followers[int(fields[3])].remove(unfollowID)
-            except ValueError:
-                print "ERROR: can't unfollow before following with message: %s" % message
-                pass
-        elif fields[1] == BROADCAST:
-            for user in users:
-                user.transport.write(message)
-        elif fields[1] == PRIVATE:
-            try:
-                users[int(fields[3])].transport.write(message)
-            except IndexError:
-                print "ERROR: no recipient for private message %s" % message
-                pass
-        elif fields[1] == STATUS:
-            for follower in followers[int(fields[2])]:
+    if msgType == 'F':
+        followers[toId].append(fromId)
+        users[toId].transport.write(message)
+    elif msgType == 'U':
+        if fromId in followers[toId]:
+            followers[toId].remove(fromId)
+    elif msgType == 'B':
+        for user in users:
+            user.transport.write(message)
+    elif msgType == 'P':
+        users[toId].transport.write(message)
+    elif msgType == 'S':
+        if followers[fromId]:
+            for follower in followers[fromId]:
                 users[follower].transport.write(message)
-        else:
-            print "ERROR: unhandled message type on message %s" % message
-            pass
-    except IndexError:
-        print "ERROR: no message type found on message %s" % message
+    else:
+        print "ERROR: unhandled message type on message %s" % message
         pass
 
-def blockingEventDispatch():
-#    try:
-#        message = events[eventSourceFactory.nextEvent]
-#        messageDispatcher(events[eventSourceFactory.nextEvent])
-#        print "processed event: %s" % message
-#        eventSourceFactory.nextEvent = eventSourceFactory.nextEvent + 1
-#    except KeyError:
-#        pass
+def blockingEventDispatch(events, nextEvent):
     try:
-        message = events[nextEvent]
-        messageDispatcher(events[nextEvent])
-        print "processed event: %s" % message
-        nextEvent = nextEvent + 1
+        if nextEvent in events:
+            messageDispatcher(events[nextEvent])
+            nextEvent = nextEvent + 1
     except KeyError:
-        pass
+        print "Error for %s : %s processing" % nextEvent, events[nextEvent]
+        pass   # should never get here with the if above
 
 if __name__ == '__main__':
     events = {}     # store all events here, keep full string, key is sequence #
@@ -103,7 +80,7 @@ if __name__ == '__main__':
     delimiter = '\n'
     separator = '|'
 
-    nextEvent = 1
+    nextEvent = 1   # just a dumb counter
 
     eventSourceFactory = EventFactory()
     eventSourceFactory.protocol = EventProtocol
@@ -113,8 +90,7 @@ if __name__ == '__main__':
     userClientsFactory.clients = []
 
     try:
-        lc = LoopingCall(blockingEventDispatch)
-        lc.start(0.1)
+        LoopingCall(blockingEventDispatch, events, nextEvent).start(0.1)
     except Exception as err:
         print "ERROR starting looping call: %s" % err
 
