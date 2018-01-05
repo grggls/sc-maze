@@ -8,7 +8,7 @@ runtests () {
   echo "Events = $2"
 
   python follower-server.py &
-  { ./followermaze.sh &> /dev/null && echo "Test passed"; } || { echo "Test failed" && exit 1; }
+  { ./followermaze.sh && echo "Test passed"; } || { echo "Test failed" && exit 1; }
 }
 
 # caveat emptor: minimally tested on GNU, works reliably on Mac OS X
@@ -16,6 +16,8 @@ cleanup () {
   echo; echo "**********************************************************"; echo
   ps -ef | grep -e "[Pp]ython [Ff]ollower-server.py" | awk '{print $2}' | xargs kill -9
 }
+
+logLevel=debug
 
 # runtests $USERS $EVENTS
 runtests 1 1
@@ -26,5 +28,20 @@ runtests 4 10
 cleanup
 
 # ever more slightly
-#runtests 10 100
-#cleanup
+runtests 10 100
+cleanup
+
+# barely scratching the surface
+runtests 100 1000
+cleanup
+
+# this might hurt
+runtests 1000 10000
+cleanup
+
+# hold on to your hats
+unset numberOfUsers
+unset totalEvents
+python follower-server.py &
+./followermaze.sh
+cleanup
