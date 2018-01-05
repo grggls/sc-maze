@@ -9,8 +9,8 @@ import sys
 
 class EventProtocol(Protocol):
     def dataReceived(self, data):
-        """ split along delimiter (\n), chomp trailing newline as unused, grab 
-            event id before storing away so we can put these in order. 
+        """ split along delimiter (\n), chomp trailing newline as unused, grab
+            event id before storing away so we can put these in order.
         """
         message = data.rstrip()
         for event in message.split(delimiter):
@@ -27,9 +27,6 @@ class EventFactory(Factory):
         self.events = {}
         self.users = userFactory.users
         self.followers = defaultdict(list)
-
-#    def buildProtocol(self, addr):
-#        return EventProtocol(self)
 
     def nextEvent(self):
         """ Return the next event in sequence or else
@@ -50,8 +47,16 @@ class EventFactory(Factory):
         else:
             log.msg("processing event: %s" % event)
             fields = event.split(separator)
-            sequence = int(fields[0])
-            msgType = fields[1]
+            try:
+                sequence = int(fields[0])
+            except:
+                return
+
+            try:
+                msgType = fields[1]
+            except:
+                return
+
             fromId = int(fields[2]) if len(fields) >= 3 else None
             toId = int(fields[3]) if len(fields) >= 4 else None
             self.currEvent += 1
@@ -77,7 +82,7 @@ class EventFactory(Factory):
                 for follower in self.followers[fromId]:
                     if follower in self.users:
                         self.users[follower].transport.write(event + '\n')
-                        log.msg("sending status %s to user %s" % 
+                        log.msg("sending status %s to user %s" %
                                 (event, self.users[follower]))
 
 class UserProtocol(Protocol):
@@ -91,7 +96,7 @@ class UserProtocol(Protocol):
         """
         userId = int(data.strip(delimiter))
         self.factory.users[userId] = self
-        log.msg("registering user: {%s: %s}" % 
+        log.msg("registering user: {%s: %s}" %
                  (userId, self.factory.users[userId]))
 
 
