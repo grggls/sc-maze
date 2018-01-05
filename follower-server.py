@@ -3,33 +3,82 @@ from twisted.internet.task import LoopingCall
 from twisted.internet.endpoints import TCP4ClientEndpoint, connectProtocol
 from twisted.internet.protocol import Protocol, Factory, ClientFactory
 from twisted.python import log
+from collections import defaultdict
 import sys
-
-
-class EventFactory(protocol.ClientFactory):
-    def __init__(self):
-        self.nextEvent = 1
-
-    def buildProtocol(self, addr):
-        p = EventProtocol()
-        p.factory = self
-        return p
 
 
 class EventProtocol(Protocol):
     def dataReceived(self, data):
-        # split along delimiter (\n), chomp trailing newline as unused, grab event id
-        # before storing away so we can put these in order. ensure we have utf8
+        """ split along delimiter (\n), chomp trailing newline as unused, grab 
+            event id before storing away so we can put these in order. 
+        """
         message = data.rstrip()
         for event in message.split(delimiter):
-            log.msg("%s received" % event)
-            sequence = event.split(separator)[0]
-            try:
-                events[int(sequence)] = event
-                log.msg("events: %s" % events)
-            except:
-                pass    # bad event?
+            sequence = int(event.split(separator)[0])
+            self.factory.events[sequence] = event
+            log.msg("storing event %s" % event)
 
+
+class EventFactory(Factory):
+    protocol = EventProtocol
+
+    def __init__(self, userFactory):
+        self.currEvent = 1
+        self.events = {}
+        self.users = userFactory.users
+        self.followers = defaultdict(list)
+
+#    def buildProtocol(self, addr):
+#        return EventProtocol(self)
+
+    def nextEvent(self):
+        """ Return the next event in sequence or else
+            return a signal that it's not ready yet
+        """
+        if self.currEvent in self.events:
+            return self.events[self.currEvent]
+        else:
+            return -1
+
+    def eventDispatcher(self):
+        """ take the sequence number, pull up the event if available, determine
+            msg type and arguments, route message, update followers, notify, &c
+        """
+        event = self.nextEvent()
+        if event < 0:
+            return
+        else:
+            log.msg("processing event: %s" % event)
+            fields = event.split(separator)
+            sequence = int(fields[0])
+            msgType = fields[1]
+            fromId = int(fields[2]) if len(fields) >= 3 else None
+            toId = int(fields[3]) if len(fields) >= 4 else None
+            self.currEvent += 1
+
+            if msgType == 'F':
+                self.followers[toId].append(fromId)
+                if toId in self.users:
+                    self.users[toId].transport.write(event + '\n')
+                    log.msg("%d following %d" % (fromId, toId))
+            elif msgType == 'U':
+                if fromId in self.followers[toId]:
+                    self.followers[toId].remove(fromId)
+                    log.msg("%d unfollowing %d" % (fromId, toId))
+            elif msgType == 'B':
+                for user in self.users:
+                    user.transport.write(event + '\n')
+                    log.msg("broadcasting %s to %s" % (event, user))
+            elif msgType == 'P':
+                if toId in self.users:
+                    self.users[toId].transport.write(event + '\n')
+                    log.msg("%s sending private message to %s" % (fromId, toId))
+            elif msgType == 'S':
+                for follower in self.followers[fromId]:
+                    if follower in self.users:
+                        self.users[follower].transport.write(event + '\n')
+                        log.msg("sending status %s to user %s" % 
+                                (event, self.users[follower]))
 
 class UserProtocol(Protocol):
     def connectionMade(self):
@@ -37,71 +86,42 @@ class UserProtocol(Protocol):
             self.transport.setTcpKeepAlive(1)
         except AttributeError: pass
 
-    # only data received from user should be userId
     def dataReceived(self, data):
-        userId = data.strip(delimiter)
-        users[int(userId)] = self
-        followers[int(userId)] = []
+        """ the only data we'll receive from user should be userId
+        """
+        userId = int(data.strip(delimiter))
+        self.factory.users[userId] = self
+        log.msg("registering user: {%s: %s}" % 
+                 (userId, self.factory.users[userId]))
 
 
-def eventDispatcher(events, nextEvent):
-    if nextEvent in events:
-        fields = events[nextEvent].split(separator)
-        sequence = int(fields[0])
-        msgType = fields[1]
-        fromId = int(fields[2]) if len(fields) > 2 else None
-        toId = int(fields[3]) if len(fields) > 3 else None
+class UserFactory(Factory):
+    protocol = UserProtocol
 
-        log.msg("processing: %s" % events[nextEvent])
-        nextEvent += 1
-
-        if msgType == 'F':
-            followers[toId].append(fromId)
-            users[toId].transport.write(message)
-            log.msg("%s to follow %s" % fromId, toId)
-        elif msgType == 'U':
-            if fromId in followers[toId]:
-                followers[toId].remove(fromId)
-                log.msg("%s to unfollow %s" % toId, fromId)
-        elif msgType == 'B':
-            for user in users:
-                user.transport.write(message)
-                log.msg("broadcasting %s to %s" % message, user)
-        elif msgType == 'P':
-            users[toId].transport.write(message)
-            log.msg("%s sending private message to %s" % fromId, toId)
-        elif msgType == 'S':
-            if followers[fromId]:
-                for follower in followers[fromId]:
-                    users[follower].transport.write(message)
-                    log.msg("sending status %s to user %s" % message, users[follower])
+    def __init__(self):
+        self.nextEvent = 1
+        self.users = {}
+        self.followers = {}
 
 
 if __name__ == '__main__':
-    events = {}     # store all events here, keep full string, key is sequence #
-    users = {}      # store all UserProtocol objects here, to write to later
-    followers = {}  # key is userID, value is list of followers {1: [3, 7], 2: [9]...}
-
     delimiter = '\n'
     separator = '|'
 
-    nextEvent = 1   # just a dumb counter
-
-    eventSourceFactory = EventFactory()
-    eventSourceFactory.protocol = EventProtocol
-
-    userClientsFactory = Factory()
-    userClientsFactory.protocol = UserProtocol
-    userClientsFactory.clients = []
+    """ send the user factory instance to the event factory constructor
+        then the events loops will have access to all: users, followers, events
+    """
+    userClientsFactory = UserFactory()
+    eventSourceFactory = EventFactory(userClientsFactory)
 
     log.startLogging(sys.stdout)
 
+    reactor.listenTCP(9099, userClientsFactory)
+    reactor.listenTCP(9090, eventSourceFactory)
+
     try:
-        LoopingCall(eventDispatcher, events, nextEvent).start(0.0001)
+        LoopingCall(eventSourceFactory.eventDispatcher).start(0.00001)
     except Exception as err:
         print "ERROR starting looping call: %s" % err
 
-    reactor.listenTCP(9090, eventSourceFactory)
-    reactor.listenTCP(9099, userClientsFactory)
     reactor.run()
-
